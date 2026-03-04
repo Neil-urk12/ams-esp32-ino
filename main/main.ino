@@ -9,9 +9,9 @@
 #define WIFI_PASSWORD "your_wifi_password"
 
 // ── Backend Config ───────────────────────────────────────────────
-#define BASE_URL          "http://192.168.1.100:8000"   // Your FastAPI server IP
+#define BASE_URL          "http://192.168.1.6:8080/api"   // Your FastAPI server IP
 #define ENDPOINT_HEALTH   BASE_URL "/health"            // GET  - Health check
-#define ENDPOINT_ATTEND   BASE_URL "/attendance/log"    // POST - Log attendance
+#define ENDPOINT_ATTEND   BASE_URL "/fingerprint/register"    // POST - Log attendance
 
 // ── Pin Definitions ──────────────────────────────────────────────
 #define FP_RX_PIN 16
@@ -39,7 +39,7 @@ void setup() {
 
   // Initialize fingerprint sensor
   fingerSerial.begin(57600, SERIAL_8N1, FP_RX_PIN, FP_TX_PIN);
-  //finger.begin(57600);
+  finger.begin(57600);
 
   if (finger.verifyPassword()) {
     Serial.println("[OK] Fingerprint sensor found!");
@@ -105,6 +105,7 @@ void loop() {
       case 'S':
         Serial.println("\n[SCAN] Place finger on sensor...");
         getFingerprintID();
+        getHealthCheck();
         printMenu();
         break;
 
@@ -260,14 +261,21 @@ uint8_t getFingerprintEnroll() {
 
 // ── Scan / Verify Fingerprint (Attendance) ────────────────────────
 void getFingerprintID() {
-  int p = finger.getImage();
-  if (p == FINGERPRINT_NOFINGER) {
-    Serial.println("[SCAN] No finger detected.");
-    return;
-  }
-  if (p != FINGERPRINT_OK) {
-    Serial.println("[ERROR] Imaging error.");
-    return;
+  int p = -1;
+  while (p != FINGERPRINT_OK) {
+    p = finger.getImage();
+    if (p == FINGERPRINT_OK) {
+      Serial.println("\nImage captured.");
+    } else if (p == FINGERPRINT_NOFINGER) {
+      Serial.print(".");
+      delay(50);
+    } else if (p == FINGERPRINT_IMAGEFAIL) {
+      Serial.println("\n[ERROR] Imaging error.");
+      return;
+    } else {
+      Serial.println("\n[ERROR] Communication error.");
+      return;
+    }
   }
 
   p = finger.image2Tz();
