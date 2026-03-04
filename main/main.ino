@@ -1,11 +1,23 @@
 #include <Adafruit_Fingerprint.h>
 #include <HardwareSerial.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>  // Install via Library Manager: "ArduinoJson" by Benoit Blanchon
+
+// ── WiFi Credentials ─────────────────────────────────────────────
+#define WIFI_SSID     "your_wifi_ssid"
+#define WIFI_PASSWORD "your_wifi_password"
+
+// ── Backend Config ───────────────────────────────────────────────
+#define BASE_URL          "http://192.168.1.100:8000"   // Your FastAPI server IP
+#define ENDPOINT_HEALTH   BASE_URL "/health"            // GET  - Health check
+#define ENDPOINT_ATTEND   BASE_URL "/attendance/log"    // POST - Log attendance
 
 // ── Pin Definitions ──────────────────────────────────────────────
 #define FP_RX_PIN 16
 #define FP_TX_PIN 17
 
-HardwareSerial fingerSerial(2);  // UART2
+HardwareSerial fingerSerial(2);
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&fingerSerial);
 
 uint8_t id;
@@ -17,8 +29,17 @@ void setup() {
 
   Serial.println("\n\n=== ESP32 Fingerprint Attendance System ===");
 
-  // finger.begin() internally calls mySerial.begin() — no need for Serial2.begin()
-  fingerSerial.begin(57600, SERIAL_8N1, 16, 17);
+  // Connect to WiFi
+  Serial.print("[WIFI] Connecting to "); Serial.println(WIFI_SSID);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500); Serial.print(".");
+  }
+  Serial.println("\n[WIFI] Connected! IP: " + WiFi.localIP().toString());
+
+  // Initialize fingerprint sensor
+  fingerSerial.begin(57600, SERIAL_8N1, FP_RX_PIN, FP_TX_PIN);
+  //finger.begin(57600);
 
   if (finger.verifyPassword()) {
     Serial.println("[OK] Fingerprint sensor found!");
@@ -27,7 +48,6 @@ void setup() {
     while (1) { delay(1); }
   }
 
-  // Print sensor parameters
   finger.getParameters();
   Serial.println(F("\n--- Sensor Parameters ---"));
   Serial.print(F("  Status       : 0x")); Serial.println(finger.status_reg, HEX);
@@ -36,7 +56,6 @@ void setup() {
   Serial.print(F("  Security Lvl : "));   Serial.println(finger.security_level);
   Serial.print(F("  Baud Rate    : "));   Serial.println(finger.baud_rate);
 
-  // Show how many fingerprints are stored
   finger.getTemplateCount();
   Serial.print(F("  Stored IDs   : "));   Serial.println(finger.templateCount);
   Serial.println(F("-------------------------\n"));
@@ -51,6 +70,8 @@ void printMenu() {
   Serial.println("  S - Scan / verify fingerprint (attendance)");
   Serial.println("  D - Delete a fingerprint by ID");
   Serial.println("  C - Count stored fingerprints");
+  Serial.println("  B - POST test (log dummy attendance)");
+  Serial.println("  H - GET test  (server health check)");
 }
 
 // ── Read Number from Serial ───────────────────────────────────────
@@ -100,20 +121,82 @@ void loop() {
         Serial.println(finger.templateCount);
         printMenu();
         break;
-      
+
       case 'B':
-        Serial.print("Patapim")
+        // POST - Send a dummy attendance record to backend
+        postAttendance(1, 95);  // fingerID=1, confidence=95
         printMenu();
         break;
 
       case 'H':
-        Serial.print("Health check endpoint")
+        // GET - Check if backend server is alive
+        getHealthCheck();
         printMenu();
         break;
-
-      case ''
     }
   }
+}
+
+// ── HTTP GET - Health Check ───────────────────────────────────────
+void getHealthCheck() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[ERROR] WiFi not connected.");
+    return;
+  }
+
+  HTTPClient http;
+  http.begin(ENDPOINT_HEALTH);
+
+  Serial.println("\n[GET] " + String(ENDPOINT_HEALTH));
+  int httpCode = http.GET();
+
+  if (httpCode > 0) {
+    String response = http.getString();
+    Serial.print("[GET] Status code : "); Serial.println(httpCode);
+    Serial.print("[GET] Response     : "); Serial.println(response);
+  } else {
+    Serial.print("[GET] Request failed, error: ");
+    Serial.println(http.errorToString(httpCode));
+  }
+
+  http.end();
+}
+
+// ── HTTP POST - Log Attendance ────────────────────────────────────
+void postAttendance(uint16_t fingerprintID, uint16_t confidence) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[ERROR] WiFi not connected.");
+    return;
+  }
+
+  // Build JSON payload
+  JsonDocument doc;
+  doc["fingerprint_id"] = fingerprintID;
+  doc["confidence"]     = confidence;
+  doc["device_id"]      = "esp32-attendance-01";  // Useful if you have multiple devices
+
+  String payload;
+  serializeJson(doc, payload);
+
+  HTTPClient http;
+  http.begin(ENDPOINT_ATTEND);
+  http.addHeader("Content-Type", "application/json");
+
+  Serial.println("\n[POST] " + String(ENDPOINT_ATTEND));
+  Serial.println("[POST] Payload: " + payload);
+
+  int httpCode = http.POST(payload);
+
+  if (httpCode > 0) {
+    String response = http.getString();
+    Serial.print("[POST] Status code : "); Serial.println(httpCode);
+    Serial.print("[POST] Response     : "); Serial.println(response);
+  } else {
+    Serial.print("[POST] Request failed, error: ");
+    Serial.println(http.errorToString(httpCode));
+  }
+
+  http.end();
 }
 
 // ── Enroll Fingerprint ────────────────────────────────────────────
@@ -197,11 +280,10 @@ void getFingerprintID() {
   if (p == FINGERPRINT_OK) {
     Serial.println("\n============================");
     Serial.println("  ✔ FINGERPRINT MATCHED");
-    Serial.print("  ID       : #"); Serial.println(finger.fingerID);
-    Serial.print("  Confidence: "); Serial.println(finger.confidence);
-    Serial.println("  [ATTENDANCE LOGGED]");
+    Serial.print("  ID        : #"); Serial.println(finger.fingerID);
+    Serial.print("  Confidence: ");  Serial.println(finger.confidence);
     Serial.println("============================\n");
-    // TODO: Send attendance record to your backend (FastAPI/Supabase) via WiFi here
+    postAttendance(finger.fingerID, finger.confidence);  // ← Real attendance POST
   } else if (p == FINGERPRINT_NOTFOUND) {
     Serial.println("[SCAN] No matching fingerprint found.");
   } else {
