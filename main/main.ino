@@ -200,13 +200,24 @@ bool beginApiRequest(HTTPClient& http, const String& url) {
   //   return http.begin(secureApiClient, url);
   // }
 
+  if (url.startsWith("http://")) {
+    // Use the legacy HTTPClient path first because this is the known-working behavior.
+    if (http.begin(url)) {
+      return true;
+    }
+
+    Serial.println("[HTTP] http.begin(url) failed, retrying with explicit WiFiClient.");
+    return http.begin(insecureApiClient, url);
+  }
+
   if (url.startsWith("https://")) {
     Serial.println("[DEV] HTTPS is currently disabled in the sketch. Switch BASE_URL back to http:// for now.");
     return false;
   }
 
-  Serial.println("[DEV] Using plaintext HTTP transport.");
-  return http.begin(insecureApiClient, url);
+  Serial.print("[HTTP] Unsupported URL scheme: ");
+  Serial.println(url);
+  return false;
 }
 
 void ensureWiFiConnected() {
