@@ -1,5 +1,7 @@
 # ESP32 Fingerprint Attendance Device
 
+> **Canonical documentation:** See [obsidian-vault/codebase-knowledge/](../obsidian-vault/codebase-knowledge/) for authoritative integration details.
+
 Arduino firmware for an ESP32-based attendance terminal that uses a fingerprint sensor to record attendance and enroll students via a backend API.
 
 ## Hardware
