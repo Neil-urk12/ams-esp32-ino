@@ -56,5 +56,7 @@ All configuration is done via `#define` macros at the top of `main/main.ino`. Ov
 
 ## Notes
 
-- HTTPS is intentionally disabled during development. To enable it, uncomment the `WiFiClientSecure` sections in `main.ino`, define `TLS_CA_CERT`, and switch `BASE_URL` to `https://`.
+- HTTPS is disabled in development. Code is present but commented out in `main/main.ino` (lines 7, 33-35, 53, 197-221).
 - The device authenticates to the backend using the `X-Device-Api-Key` header on every request.
+- Enrollment result delivery retries every 15 seconds on transient failures (408, 425, 429, 5xx).
+- Local fingerprint slots are kept until backend confirms enrollment; rejected enrollments trigger local slot deletion.
