@@ -6,6 +6,8 @@
 #include <WiFiClient.h>
 // #include <WiFiClientSecure.h> // Disabled during development; re-enable for HTTPS
 #include <mbedtls/base64.h>
+#include <LiquidCrystal_I2C.h>
+#include <Wire.h>
 
 #ifndef WIFI_SSID
 #define WIFI_SSID     "your_wifi_ssid"
@@ -47,7 +49,13 @@
 #define TEMPLATE_STREAM_IDLE_MS 120
 #define TEMPLATE_STREAM_DRAIN_TIMEOUT_MS 1500
 
+#define LCD_ADDR 0x27
+#define LCD_COLS 20
+#define LCD_ROWS 4
+#define LCD_RESULT_DISPLAY_MS 3000UL
+
 HardwareSerial fingerSerial(2);
+LiquidCrystal_I2C lcd(LCD_ADDR, LCD_COLS, LCD_ROWS);
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&fingerSerial);
 WiFiClient insecureApiClient;
 // WiFiClientSecure secureApiClient;
@@ -80,6 +88,66 @@ unsigned long lastEnrollmentPollMs = 0;
 uint16_t activeSlotId = 0;
 PendingEnrollmentResult pendingEnrollmentResult;
 
+unsigned long lcdResultTimestamp = 0;
+bool lcdResultActive = false;
+
+void lcdInit() {
+  Wire.begin();
+  lcd.init();
+  lcd.backlight();
+  lcdPrintLine(0, "ESP32 Attendance");
+  lcdPrintLine(1, "Initializing...");
+}
+
+void lcdPrintLine(uint8_t line, const char* text) {
+  if (line >= LCD_ROWS) return;
+  lcd.setCursor(0, line);
+  uint8_t len = strlen(text);
+  uint8_t pad = (len < LCD_COLS) ? (LCD_COLS - len) : 0;
+  for (uint8_t i = 0; i < LCD_COLS; i++) {
+    if (i < len && i < LCD_COLS) {
+      lcd.print(text[i]);
+    } else {
+      lcd.print(' ');
+    }
+  }
+}
+
+void lcdPrintCenter(uint8_t line, const char* text) {
+  if (line >= LCD_ROWS) return;
+  uint8_t len = strlen(text);
+  if (len >= LCD_COLS) {
+    lcdPrintLine(line, text);
+    return;
+  }
+  uint8_t pad = (LCD_COLS - len) / 2;
+  lcd.setCursor(0, line);
+  for (uint8_t i = 0; i < pad; i++) lcd.print(' ');
+  lcd.print(text);
+  for (uint8_t i = pad + len; i < LCD_COLS; i++) lcd.print(' ');
+}
+
+void updateLcdWifiLine(const char* text) {
+  lcdPrintLine(1, text);
+}
+
+void updateLcdOpLine(const char* text) {
+  lcdPrintLine(2, text);
+}
+
+void lcdFlashResult(const char* text) {
+  lcdPrintLine(3, text);
+  lcdResultTimestamp = millis();
+  lcdResultActive = true;
+}
+
+void updateLcdResultTimeout() {
+  if (lcdResultActive && millis() - lcdResultTimestamp >= LCD_RESULT_DISPLAY_MS) {
+    lcdPrintLine(3, "");
+    lcdResultActive = false;
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   while (!Serial) {
@@ -89,6 +157,9 @@ void setup() {
 
   Serial.println("\n\n=== ESP32 Fingerprint Enrollment + Attendance Device ===");
 
+  lcdInit();
+  updateLcdOpLine("Connecting WiFi...");
+
   connectWiFi();
 
   fingerSerial.begin(57600, SERIAL_8N1, FP_RX_PIN, FP_TX_PIN);
@@ -96,6 +167,7 @@ void setup() {
 
   if (!finger.verifyPassword()) {
     Serial.println("[ERROR] Fingerprint sensor not found. Check wiring.");
+    updateLcdOpLine("Sensor error!");
     while (true) {
       delay(1);
     }
@@ -113,6 +185,9 @@ void setup() {
   Serial.print(F("  Stored IDs   : ")); Serial.println(finger.templateCount);
   Serial.println(F("-------------------------\n"));
 
+  updateLcdOpLine("Idle...");
+  lcdFlashResult("Ready");
+
   printMenu();
 }
 
@@ -121,6 +196,7 @@ void loop() {
   processPendingEnrollmentResultIfDue();
   pollEnrollmentSessionIfNeeded(false);
   handleSerialCommands();
+  updateLcdResultTimeout();
 }
 
 void printMenu() {
@@ -142,13 +218,17 @@ void handleSerialCommands() {
   switch (cmd) {
     case 'S':
       Serial.println("\n[SCAN] Place finger on sensor...");
+      updateLcdOpLine("Scanning...");
       getFingerprintID();
+      updateLcdOpLine("Idle...");
       printMenu();
       break;
 
     case 'P':
       Serial.println("\n[POLL] Checking backend for pending enrollment job...");
+      updateLcdOpLine("Polling...");
       pollEnrollmentSessionIfNeeded(true);
+      updateLcdOpLine("Idle...");
       printMenu();
       break;
 
@@ -162,6 +242,7 @@ void handleSerialCommands() {
         break;
       }
       deleteFingerprint(activeSlotId);
+      lcdFlashResult("Deleted slot #");
       Serial.println("[WARN] Backend registration is not removed automatically by local delete.");
       printMenu();
       break;
@@ -170,11 +251,18 @@ void handleSerialCommands() {
       finger.getTemplateCount();
       Serial.print("\n[COUNT] Stored fingerprints: ");
       Serial.println(finger.templateCount);
+      {
+        String countMsg = "Count: ";
+        countMsg += finger.templateCount;
+        lcdFlashResult(countMsg.c_str());
+      }
       printMenu();
       break;
 
     case 'H':
+      updateLcdOpLine("Health check...");
       getHealthCheck();
+      updateLcdOpLine("Idle...");
       printMenu();
       break;
   }
@@ -191,6 +279,9 @@ void connectWiFi() {
   }
 
   Serial.println("\n[WIFI] Connected! IP: " + WiFi.localIP().toString());
+
+  String wifiLine = "WiFi: " + WiFi.localIP().toString();
+  updateLcdWifiLine(wifiLine.c_str());
 }
 
 bool beginApiRequest(HTTPClient& http, const String& url) {
@@ -226,6 +317,7 @@ void ensureWiFiConnected() {
   }
 
   Serial.println("[WIFI] Connection lost. Reconnecting...");
+  updateLcdWifiLine("WiFi: Reconnecting...");
   WiFi.disconnect();
   connectWiFi();
 }
@@ -327,6 +419,8 @@ bool fetchPendingEnrollmentSession(EnrollmentJob& job) {
   Serial.print("  Student : "); Serial.println(job.studentName);
   Serial.print("  Student ID: "); Serial.println(job.studentId);
   Serial.print("  Slot    : "); Serial.println(job.assignedSensorFingerprintId);
+  String enrollMsg = "Enroll: " + job.studentName;
+  updateLcdOpLine(enrollMsg.substring(0, LCD_COLS).c_str());
   return true;
 }
 
@@ -335,13 +429,17 @@ void processEnrollmentJob(const EnrollmentJob& job) {
   Serial.print("[ENROLL] Student: "); Serial.println(job.studentName);
   Serial.print("[ENROLL] Assigned slot: #"); Serial.println(job.assignedSensorFingerprintId);
 
+  updateLcdOpLine("Enrolling...");
+
   activeSlotId = job.assignedSensorFingerprintId;
   uint8_t enrollResult = getFingerprintEnroll();
   if (enrollResult != FINGERPRINT_OK) {
     String failureReason = enrollmentFailureMessage(enrollResult);
     Serial.print("[ENROLL] Failed: ");
     Serial.println(failureReason);
+    lcdFlashResult("Enroll failed");
     deliverEnrollmentResult(job, false, "", failureReason);
+    updateLcdOpLine("Idle...");
     return;
   }
 
@@ -349,7 +447,9 @@ void processEnrollmentJob(const EnrollmentJob& job) {
   if (!exportTemplateBase64(job.assignedSensorFingerprintId, templateBase64)) {
     Serial.println("[ENROLL] Failed to export template backup. Rolling back local slot.");
     deleteFingerprint(job.assignedSensorFingerprintId);
+    lcdFlashResult("Export failed");
     deliverEnrollmentResult(job, false, "", "Failed to export template backup from sensor");
+    updateLcdOpLine("Idle...");
     return;
   }
 
@@ -357,14 +457,21 @@ void processEnrollmentJob(const EnrollmentJob& job) {
   if (deliveryStatus == ENROLLMENT_RESULT_REJECTED) {
     Serial.println("[ENROLL] Backend rejected the enrollment result. Removing the local slot.");
     deleteFingerprint(job.assignedSensorFingerprintId);
+    lcdFlashResult("Enroll rejected");
   } else if (deliveryStatus == ENROLLMENT_RESULT_RETRY_LATER) {
     Serial.println("[ENROLL] Enrollment confirmation is pending retry. Keeping the local slot until the backend confirms.");
+    lcdFlashResult("Enroll pending...");
+  } else {
+    lcdFlashResult("Enrolled OK");
   }
+
+  updateLcdOpLine("Idle...");
 }
 
 void getHealthCheck() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[ERROR] WiFi not connected.");
+    lcdFlashResult("WiFi not connected");
     return;
   }
 
@@ -381,9 +488,11 @@ void getHealthCheck() {
     String response = http.getString();
     Serial.print("[GET] Status code : "); Serial.println(httpCode);
     Serial.print("[GET] Response     : "); Serial.println(response);
+    lcdFlashResult(httpCode == 200 ? "Server: OK" : "Server: Error");
   } else {
     Serial.print("[GET] Request failed, error: ");
     Serial.println(http.errorToString(httpCode));
+    lcdFlashResult("Health check failed");
   }
 
   http.end();
@@ -486,6 +595,7 @@ uint8_t getFingerprintEnroll() {
   int p = -1;
 
   Serial.print("\nWaiting for finger to enroll as slot #"); Serial.println(activeSlotId);
+  lcdPrintLine(3, "Place finger...");
   while (p != FINGERPRINT_OK) {
     p = finger.getImage();
     if (p == FINGERPRINT_OK) Serial.println("Image captured.");
@@ -497,16 +607,19 @@ uint8_t getFingerprintEnroll() {
   p = finger.image2Tz(1);
   if (p != FINGERPRINT_OK) {
     Serial.println("[ERROR] Could not convert image.");
+    lcdFlashResult("Convert failed");
     return p;
   }
 
   Serial.println("Remove finger...");
+  lcdPrintLine(3, "Remove finger...");
   delay(2000);
   while (finger.getImage() != FINGERPRINT_NOFINGER) {
     delay(50);
   }
 
   Serial.println("Place the SAME finger again...");
+  lcdPrintLine(3, "Place same finger");
   p = -1;
   while (p != FINGERPRINT_OK) {
     p = finger.getImage();
@@ -518,16 +631,19 @@ uint8_t getFingerprintEnroll() {
   p = finger.image2Tz(2);
   if (p != FINGERPRINT_OK) {
     Serial.println("[ERROR] Could not convert image.");
+    lcdFlashResult("Convert failed");
     return p;
   }
 
   p = finger.createModel();
   if (p == FINGERPRINT_ENROLLMISMATCH) {
     Serial.println("[ERROR] Fingerprints did not match. Try again.");
+    lcdFlashResult("No match");
     return p;
   }
   if (p != FINGERPRINT_OK) {
     Serial.println("[ERROR] Could not create model.");
+    lcdFlashResult("Model failed");
     return p;
   }
 
@@ -544,6 +660,7 @@ uint8_t getFingerprintEnroll() {
 
 void getFingerprintID() {
   int p = -1;
+  lcdPrintLine(3, "Place finger...");
   while (p != FINGERPRINT_OK) {
     p = finger.getImage();
     if (p == FINGERPRINT_OK) {
@@ -553,9 +670,11 @@ void getFingerprintID() {
       delay(50);
     } else if (p == FINGERPRINT_IMAGEFAIL) {
       Serial.println("\n[ERROR] Imaging error.");
+      lcdFlashResult("Imaging error");
       return;
     } else {
       Serial.println("\n[ERROR] Communication error.");
+      lcdFlashResult("Comm error");
       return;
     }
   }
@@ -563,6 +682,7 @@ void getFingerprintID() {
   p = finger.image2Tz();
   if (p != FINGERPRINT_OK) {
     Serial.println("[ERROR] Could not convert image.");
+    lcdFlashResult("Convert failed");
     return;
   }
 
@@ -573,11 +693,18 @@ void getFingerprintID() {
     Serial.print("  Slot ID   : #"); Serial.println(finger.fingerID);
     Serial.print("  Confidence: "); Serial.println(finger.confidence);
     Serial.println("============================\n");
+    String matchMsg = "Match #";
+    matchMsg += finger.fingerID;
+    matchMsg += " Conf:";
+    matchMsg += finger.confidence;
+    lcdFlashResult(matchMsg.c_str());
     postScanResult(finger.fingerID, finger.confidence);
   } else if (p == FINGERPRINT_NOTFOUND) {
     Serial.println("[SCAN] No matching fingerprint found on sensor.");
+    lcdFlashResult("No match found");
   } else {
     Serial.println("[ERROR] Search failed.");
+    lcdFlashResult("Search failed");
   }
 }
 
@@ -683,12 +810,14 @@ void processPendingEnrollmentResultIfDue() {
 
   if (status == ENROLLMENT_RESULT_CONFIRMED) {
     Serial.println("[POST] Backend confirmed the deferred enrollment result.");
+    lcdFlashResult("Enroll confirmed");
     clearPendingEnrollmentResult();
     return;
   }
 
   if (status == ENROLLMENT_RESULT_REJECTED) {
     Serial.println("[POST] Backend permanently rejected the deferred enrollment result.");
+    lcdFlashResult("Enroll rejected");
     if (pendingEnrollmentResult.success) {
       Serial.println("[POST] Removing the local fingerprint because the backend explicitly rejected the enrollment.");
       deleteFingerprint(pendingEnrollmentResult.job.assignedSensorFingerprintId);
