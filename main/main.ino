@@ -4,7 +4,7 @@
 #include <HardwareSerial.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
-// #include <WiFiClientSecure.h> // Disabled during development; re-enable for HTTPS
+#include <WiFiClientSecure.h>
 #include <mbedtls/base64.h>
 #include <LiquidCrystal_I2C.h>
 #include <Wire.h>
@@ -32,9 +32,9 @@
 // Development transport mode:
 // - HTTPS support is intentionally commented out for now while the device flow is still changing.
 // - Re-enable WiFiClientSecure, TLS_CA_CERT, and the secure branch in beginApiRequest() before production.
-// #ifndef TLS_CA_CERT
-// #define TLS_CA_CERT ""
-// #endif
+#ifndef TLS_CA_CERT
+#define TLS_CA_CERT ""
+#endif
 
 #define ENDPOINT_HEALTH BASE_URL "/health"
 #define FP_RX_PIN 16
@@ -58,7 +58,7 @@ HardwareSerial fingerSerial(2);
 LiquidCrystal_I2C lcd(LCD_ADDR, LCD_COLS, LCD_ROWS);
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&fingerSerial);
 WiFiClient insecureApiClient;
-// WiFiClientSecure secureApiClient;
+WiFiClientSecure secureApiClient;
 
 struct EnrollmentJob {
   bool available = false;
@@ -285,11 +285,14 @@ void connectWiFi() {
 }
 
 bool beginApiRequest(HTTPClient& http, const String& url) {
-  // HTTPS path intentionally disabled during development.
-  // if (url.startsWith("https://")) {
-  //   secureApiClient.setCACert(TLS_CA_CERT);
-  //   return http.begin(secureApiClient, url);
-  // }
+  if (url.startsWith("https://")) {
+    if (strlen(TLS_CA_CERT) > 0) {
+      secureApiClient.setCACert(TLS_CA_CERT);
+    } else {
+      secureApiClient.setInsecure();
+    }
+    return http.begin(secureApiClient, url);
+  }
 
   if (url.startsWith("http://")) {
     // Use the legacy HTTPClient path first because this is the known-working behavior.
@@ -299,11 +302,6 @@ bool beginApiRequest(HTTPClient& http, const String& url) {
 
     Serial.println("[HTTP] http.begin(url) failed, retrying with explicit WiFiClient.");
     return http.begin(insecureApiClient, url);
-  }
-
-  if (url.startsWith("https://")) {
-    Serial.println("[DEV] HTTPS is currently disabled in the sketch. Switch BASE_URL back to http:// for now.");
-    return false;
   }
 
   Serial.print("[HTTP] Unsupported URL scheme: ");
