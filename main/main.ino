@@ -54,8 +54,8 @@ WiFiClient insecureApiClient;
 
 struct EnrollmentJob {
   bool available = false;
-  String enrollmentSessionId;
-  int studentId = 0;
+  String id;
+  String studentId;
   String studentName;
   uint16_t assignedSensorFingerprintId = 0;
 };
@@ -307,12 +307,12 @@ bool fetchPendingEnrollmentSession(EnrollmentJob& job) {
   }
 
   job.available = doc["success"] | false;
-  job.enrollmentSessionId = String((const char*)(doc["enrollmentSessionId"] | ""));
-  job.studentId = doc["studentId"] | 0;
+  job.id = String((const char*)(doc["id"] | ""));
+  job.studentId = String((const char*)(doc["studentId"] | ""));
   job.studentName = String((const char*)(doc["studentName"] | ""));
   job.assignedSensorFingerprintId = static_cast<uint16_t>(doc["assignedSensorFingerprintId"] | 0);
 
-  if (!job.available || job.enrollmentSessionId.length() == 0) {
+  if (!job.available || job.id.length() == 0 || job.studentId.length() == 0) {
     Serial.println("[POLL] Backend returned an invalid enrollment payload.");
     return false;
   }
@@ -396,7 +396,7 @@ EnrollmentResultDeliveryStatus postEnrollmentResult(const EnrollmentJob& job, bo
   }
 
   JsonDocument doc;
-  doc["enrollmentSessionId"] = job.enrollmentSessionId;
+  doc["id"] = job.id;
   doc["deviceId"] = DEVICE_ID;
   doc["sensorFingerprintId"] = job.assignedSensorFingerprintId;
   doc["success"] = success;
