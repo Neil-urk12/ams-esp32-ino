@@ -53,6 +53,7 @@
 #define LCD_COLS 20
 #define LCD_ROWS 4
 #define LCD_RESULT_DISPLAY_MS 3000UL
+#define AUTO_SCAN_INTERVAL_MS 2000UL
 
 HardwareSerial fingerSerial(2);
 LiquidCrystal_I2C lcd(LCD_ADDR, LCD_COLS, LCD_ROWS);
@@ -90,6 +91,9 @@ PendingEnrollmentResult pendingEnrollmentResult;
 
 unsigned long lcdResultTimestamp = 0;
 bool lcdResultActive = false;
+unsigned long lastAutoScanAttemptMs = 0;
+bool readyToScanShown = false;
+bool autoScanAwaitingFingerRemoval = false;
 
 void lcdInit() {
   delay(1000);
@@ -100,7 +104,7 @@ void lcdInit() {
   lcd.backlight();
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcdPrintLine(0, "ESP32 Attendance");
+  lcdPrintLine(0, "AMS");
   lcdPrintLine(1, "Initializing...");
 }
 
@@ -190,7 +194,8 @@ void setup() {
   Serial.print(F("  Stored IDs   : ")); Serial.println(finger.templateCount);
   Serial.println(F("-------------------------\n"));
 
-  updateLcdOpLine("Idle...");
+  updateLcdOpLine("Ready to scan");
+  readyToScanShown = true;
   lcdFlashResult("Ready");
 
   printMenu();
@@ -202,6 +207,7 @@ void loop() {
   pollEnrollmentSessionIfNeeded(false);
   handleSerialCommands();
   updateLcdResultTimeout();
+  scanFingerprintAutomaticallyIfDue();
 }
 
 void printMenu() {
@@ -211,6 +217,7 @@ void printMenu() {
   Serial.println("  D - Delete a fingerprint by slot ID");
   Serial.println("  C - Count stored fingerprints");
   Serial.println("  H - GET test (server health check)");
+  Serial.println("  R - Reset/clear pending enrollment result");
 }
 
 void handleSerialCommands() {
@@ -224,16 +231,20 @@ void handleSerialCommands() {
     case 'S':
       Serial.println("\n[SCAN] Place finger on sensor...");
       updateLcdOpLine("Scanning...");
-      getFingerprintID();
-      updateLcdOpLine("Idle...");
+      readyToScanShown = false;
+      if (getFingerprintID(true)) {
+        autoScanAwaitingFingerRemoval = true;
+      }
+      showReadyToScan();
       printMenu();
       break;
 
     case 'P':
       Serial.println("\n[POLL] Checking backend for pending enrollment job...");
       updateLcdOpLine("Polling...");
+      readyToScanShown = false;
       pollEnrollmentSessionIfNeeded(true);
-      updateLcdOpLine("Idle...");
+      showReadyToScan();
       printMenu();
       break;
 
@@ -266,11 +277,65 @@ void handleSerialCommands() {
 
     case 'H':
       updateLcdOpLine("Health check...");
+      readyToScanShown = false;
       getHealthCheck();
-      updateLcdOpLine("Idle...");
+      showReadyToScan();
+      printMenu();
+      break;
+
+    case 'R':
+      Serial.println("\n[RESET] Clearing pending enrollment result...");
+      clearPendingEnrollmentResult();
+      lcdFlashResult("Pending cleared");
       printMenu();
       break;
   }
+}
+
+void showReadyToScan() {
+  if (readyToScanShown) {
+    return;
+  }
+
+  updateLcdOpLine("Ready to scan");
+  readyToScanShown = true;
+}
+
+void scanFingerprintAutomaticallyIfDue() {
+  const unsigned long now = millis();
+  if (now - lastAutoScanAttemptMs < AUTO_SCAN_INTERVAL_MS) {
+    return;
+  }
+
+  lastAutoScanAttemptMs = now;
+
+  if (autoScanAwaitingFingerRemoval) {
+    int imageStatus = finger.getImage();
+    if (imageStatus == FINGERPRINT_NOFINGER) {
+      autoScanAwaitingFingerRemoval = false;
+      showReadyToScan();
+    } else {
+      updateLcdOpLine("Remove finger");
+      readyToScanShown = false;
+    }
+    return;
+  }
+
+  // First check if finger is present before showing "Scanning..."
+  int imageStatus = finger.getImage();
+  if (imageStatus == FINGERPRINT_NOFINGER) {
+    // No finger present, keep showing ready state
+    showReadyToScan();
+    return;
+  }
+
+  // Finger detected, proceed with full scan
+  updateLcdOpLine("Scanning...");
+  readyToScanShown = false;
+  if (getFingerprintID(true)) {
+    autoScanAwaitingFingerRemoval = true;
+  }
+  showReadyToScan();
 }
 
 void connectWiFi() {
@@ -402,7 +467,7 @@ bool fetchPendingEnrollmentSession(EnrollmentJob& job) {
   }
 
   job.available = doc["success"] | false;
-  job.id = String((const char*)(doc["id"] | ""));
+  job.id = String((const char*)(doc["enrollmentSessionId"] | ""));
   job.studentId = String((const char*)(doc["studentId"] | ""));
   job.studentName = String((const char*)(doc["studentName"] | ""));
   job.assignedSensorFingerprintId = static_cast<uint16_t>(doc["assignedSensorFingerprintId"] | 0);
@@ -433,6 +498,8 @@ void processEnrollmentJob(const EnrollmentJob& job) {
   Serial.print("[ENROLL] Assigned slot: #"); Serial.println(job.assignedSensorFingerprintId);
 
   updateLcdOpLine("Enrolling...");
+  readyToScanShown = false;
+  autoScanAwaitingFingerRemoval = false;
 
   activeSlotId = job.assignedSensorFingerprintId;
   uint8_t enrollResult = getFingerprintEnroll();
@@ -442,7 +509,8 @@ void processEnrollmentJob(const EnrollmentJob& job) {
     Serial.println(failureReason);
     lcdFlashResult("Enroll failed");
     deliverEnrollmentResult(job, false, "", failureReason);
-    updateLcdOpLine("Idle...");
+    autoScanAwaitingFingerRemoval = true;
+    showReadyToScan();
     return;
   }
 
@@ -452,7 +520,8 @@ void processEnrollmentJob(const EnrollmentJob& job) {
     deleteFingerprint(job.assignedSensorFingerprintId);
     lcdFlashResult("Export failed");
     deliverEnrollmentResult(job, false, "", "Failed to export template backup from sensor");
-    updateLcdOpLine("Idle...");
+    autoScanAwaitingFingerRemoval = true;
+    showReadyToScan();
     return;
   }
 
@@ -468,7 +537,8 @@ void processEnrollmentJob(const EnrollmentJob& job) {
     lcdFlashResult("Enrolled OK");
   }
 
-  updateLcdOpLine("Idle...");
+  autoScanAwaitingFingerRemoval = true;
+  showReadyToScan();
 }
 
 void getHealthCheck() {
@@ -586,9 +656,20 @@ void postScanResult(uint16_t fingerprintID, uint16_t confidence) {
     String response = http.getString();
     Serial.print("[POST] Status code : "); Serial.println(httpCode);
     Serial.print("[POST] Response     : "); Serial.println(response);
+
+    // Parse response and display message on LCD
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, response);
+    if (!error && doc.containsKey("message")) {
+      String message = String((const char*)(doc["message"] | ""));
+      if (message.length() > 0) {
+        lcdFlashResult(message.c_str());
+      }
+    }
   } else {
     Serial.print("[POST] Request failed, error: ");
     Serial.println(http.errorToString(httpCode));
+    lcdFlashResult("Scan failed");
   }
 
   http.end();
@@ -661,24 +742,33 @@ uint8_t getFingerprintEnroll() {
   return p;
 }
 
-void getFingerprintID() {
+bool getFingerprintID(bool waitForFinger) {
   int p = -1;
-  lcdPrintLine(3, "Place finger...");
+  bool imageCaptured = false;
+  if (waitForFinger) {
+    lcdPrintLine(3, "Place finger...");
+  }
+
   while (p != FINGERPRINT_OK) {
     p = finger.getImage();
     if (p == FINGERPRINT_OK) {
+      imageCaptured = true;
       Serial.println("\nImage captured.");
     } else if (p == FINGERPRINT_NOFINGER) {
+      if (!waitForFinger) {
+        return false;
+      }
+
       Serial.print(".");
       delay(50);
     } else if (p == FINGERPRINT_IMAGEFAIL) {
       Serial.println("\n[ERROR] Imaging error.");
       lcdFlashResult("Imaging error");
-      return;
+      return imageCaptured;
     } else {
       Serial.println("\n[ERROR] Communication error.");
       lcdFlashResult("Comm error");
-      return;
+      return imageCaptured;
     }
   }
 
@@ -686,7 +776,7 @@ void getFingerprintID() {
   if (p != FINGERPRINT_OK) {
     Serial.println("[ERROR] Could not convert image.");
     lcdFlashResult("Convert failed");
-    return;
+    return imageCaptured;
   }
 
   p = finger.fingerSearch();
@@ -709,6 +799,8 @@ void getFingerprintID() {
     Serial.println("[ERROR] Search failed.");
     lcdFlashResult("Search failed");
   }
+
+  return imageCaptured;
 }
 
 void deleteFingerprint(uint16_t delID) {
