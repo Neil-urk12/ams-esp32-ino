@@ -92,9 +92,14 @@ unsigned long lcdResultTimestamp = 0;
 bool lcdResultActive = false;
 
 void lcdInit() {
-  Wire.begin(21,22);
+  delay(1000);
+  Wire.begin(21, 22);
+  Wire.setClock(10000);
+  lcd.init();
   lcd.init();
   lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0, 0);
   lcdPrintLine(0, "ESP32 Attendance");
   lcdPrintLine(1, "Initializing...");
 }
