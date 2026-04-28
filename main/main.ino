@@ -144,6 +144,35 @@ void updateLcdOpLine(const char* text) {
   lcdPrintLine(2, text);
 }
 
+String shortenMessageForLcd(const String& message) {
+  // Map common long messages to shorter versions
+  if (message == "No active session found at this time") {
+    return "No active session";
+  }
+  if (message == "Student account not found or inactive") {
+    return "Student inactive";
+  }
+  if (message == "Session not found") {
+    return "No session";
+  }
+  if (message == "Session is not active") {
+    return "Session inactive";
+  }
+  if (message == "Student is not enrolled in this session") {
+    return "Not enrolled";
+  }
+  if (message == "No matching fingerprint found") {
+    return "No match";
+  }
+  
+  // If no mapping, truncate to LCD width
+  if (message.length() > LCD_COLS) {
+    return message.substring(0, LCD_COLS);
+  }
+  
+  return message;
+}
+
 void lcdFlashResult(const char* text) {
   lcdPrintLine(3, text);
   lcdResultTimestamp = millis();
@@ -194,6 +223,7 @@ void setup() {
   Serial.print(F("  Stored IDs   : ")); Serial.println(finger.templateCount);
   Serial.println(F("-------------------------\n"));
 
+  updateLcdWifiLine("");  // Clear "Initializing..." message
   updateLcdOpLine("Ready to scan");
   readyToScanShown = true;
   lcdFlashResult("Ready");
@@ -659,7 +689,8 @@ void postScanResult(uint16_t fingerprintID, uint16_t confidence) {
     if (!error && doc.containsKey("message")) {
       String message = String((const char*)(doc["message"] | ""));
       if (message.length() > 0) {
-        lcdFlashResult(message.c_str());
+        String shortMessage = shortenMessageForLcd(message);
+        lcdFlashResult(shortMessage.c_str());
       }
     }
   } else {
