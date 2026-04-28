@@ -321,21 +321,15 @@ void scanFingerprintAutomaticallyIfDue() {
     return;
   }
 
-  // First check if finger is present before showing "Scanning..."
-  int imageStatus = finger.getImage();
-  if (imageStatus == FINGERPRINT_NOFINGER) {
-    // No finger present, keep showing ready state
-    showReadyToScan();
-    return;
-  }
-
-  // Finger detected, proceed with full scan
-  updateLcdOpLine("Scanning...");
-  readyToScanShown = false;
-  if (getFingerprintID(true)) {
+  // Try to scan - only show "Reading fingerprint" if finger is actually captured
+  if (getFingerprintID(false)) {
+    Serial.println("[AUTO-SCAN] Finger captured successfully");
     autoScanAwaitingFingerRemoval = true;
+    // Don't show ready to scan - wait for finger removal
+  } else {
+    // No finger captured, return to ready state
+    showReadyToScan();
   }
-  showReadyToScan();
 }
 
 void connectWiFi() {
@@ -350,8 +344,9 @@ void connectWiFi() {
 
   Serial.println("\n[WIFI] Connected! IP: " + WiFi.localIP().toString());
 
-  String wifiLine = "WiFi: " + WiFi.localIP().toString();
-  updateLcdWifiLine(wifiLine.c_str());
+  // WiFi info hidden from LCD - shown only in Serial Monitor
+  // String wifiLine = "WiFi: " + WiFi.localIP().toString();
+  // updateLcdWifiLine(wifiLine.c_str());
 }
 
 bool beginApiRequest(HTTPClient& http, const String& url) {
@@ -385,7 +380,8 @@ void ensureWiFiConnected() {
   }
 
   Serial.println("[WIFI] Connection lost. Reconnecting...");
-  updateLcdWifiLine("WiFi: Reconnecting...");
+  // WiFi reconnect status hidden from LCD
+  // updateLcdWifiLine("WiFi: Reconnecting...");
   WiFi.disconnect();
   connectWiFi();
 }
@@ -747,7 +743,15 @@ bool getFingerprintID(bool waitForFinger) {
   bool imageCaptured = false;
   if (waitForFinger) {
     lcdPrintLine(3, "Place finger...");
+  } else {
+    updateLcdOpLine("Scanning...");
+    readyToScanShown = false;
   }
+
+  // In auto-scan mode, give more time for a good image capture
+  // The sensor may need time to stabilize the image and detect finger properly
+  int maxRetries = waitForFinger ? 0 : 30;  // 30 retries
+  int retryCount = 0;
 
   while (p != FINGERPRINT_OK) {
     p = finger.getImage();
@@ -756,7 +760,14 @@ bool getFingerprintID(bool waitForFinger) {
       Serial.println("\nImage captured.");
     } else if (p == FINGERPRINT_NOFINGER) {
       if (!waitForFinger) {
-        return false;
+        retryCount++;
+        if (retryCount > maxRetries) {
+          Serial.println("[AUTO-SCAN] No finger detected after " + String(retryCount) + " retries");
+          return false;
+        }
+        // Longer delay between retries - sensor needs time to detect finger
+        delay(150);
+        continue;
       }
 
       Serial.print(".");
